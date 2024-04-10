@@ -238,6 +238,11 @@
 //! }
 //! ```
 
+#![no_std]
+#![feature(error_in_core)]
+#![feature(core_io_borrowed_buf)]
+extern crate alloc;
+
 use core::ops::{Range, RangeFrom};
 /// Represent a multi-bytes field with a fixed size in a packet
 pub(crate) type Field = Range<usize>;
@@ -248,7 +253,6 @@ pub mod done;
 pub use self::done::*;
 
 pub mod error;
-pub use self::error::*;
 
 pub mod buffer;
 pub use self::buffer::*;

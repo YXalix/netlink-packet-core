@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 
+use axerrno::AxError;
+
 use crate::NetlinkHeader;
-use std::error::Error;
 
 /// A `NetlinkDeserializable` type can be deserialized from a buffer
 pub trait NetlinkDeserializable: Sized {
-    type Error: Error + Send + Sync + 'static;
 
     /// Deserialize the given buffer into `Self`.
     fn deserialize(
         header: &NetlinkHeader,
         payload: &[u8],
-    ) -> Result<Self, Self::Error>;
+    ) -> Result<Self, AxError>;
 }
 
 pub trait NetlinkSerializable {

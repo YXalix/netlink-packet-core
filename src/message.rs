@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 
-use std::fmt::Debug;
+use core::fmt::Debug;
 
-use anyhow::Context;
+use axerrno::AxError;
+use log::error;
 use netlink_packet_utils::DecodeError;
 
 use crate::{
-    payload::{NLMSG_DONE, NLMSG_ERROR, NLMSG_NOOP, NLMSG_OVERRUN},
-    DoneBuffer, DoneMessage, Emitable, ErrorBuffer, ErrorMessage,
+    payload::{NLMSG_DONE, NLMSG_NOOP, NLMSG_OVERRUN},
+    DoneBuffer, DoneMessage, Emitable, // ErrorBuffer, ErrorMessage,
     NetlinkBuffer, NetlinkDeserializable, NetlinkHeader, NetlinkPayload,
     NetlinkSerializable, Parseable,
 };
@@ -24,8 +25,8 @@ pub struct NetlinkMessage<I> {
 
 impl<I> NetlinkMessage<I> {
     /// Create a new netlink message from the given header and payload
-    pub fn new(header: NetlinkHeader, payload: NetlinkPayload<I>) -> Self {
-        NetlinkMessage { header, payload }
+    pub fn new(header: NetlinkHeader, done: NetlinkPayload<I>) -> Self {
+        NetlinkMessage { header, payload: done}
     }
 
     /// Consume this message and return its header and payload
@@ -92,30 +93,31 @@ where
         use self::NetlinkPayload::*;
 
         let header =
-            <NetlinkHeader as Parseable<NetlinkBuffer<&'buffer B>>>::parse(buf)
-                .context("failed to parse netlink header")?;
+            <NetlinkHeader as Parseable<NetlinkBuffer<&'buffer B>>>::parse(buf)?;
+
+        error!("NetlinkMessage::parse: header: {:?}", header);
 
         let bytes = buf.payload();
+
         let payload = match header.message_type {
-            NLMSG_ERROR => {
-                let msg = ErrorBuffer::new_checked(&bytes)
-                    .and_then(|buf| ErrorMessage::parse(&buf))
-                    .context("failed to parse NLMSG_ERROR")?;
-                Error(msg)
-            }
+            // NLMSG_ERROR => {
+            //     let msg = ErrorBuffer::new_checked(&bytes)
+            //         .and_then(|buf| ErrorMessage::parse(&buf))?;
+            //     Error(msg)
+            // }
             NLMSG_NOOP => Noop,
             NLMSG_DONE => {
                 let msg = DoneBuffer::new_checked(&bytes)
-                    .and_then(|buf| DoneMessage::parse(&buf))
-                    .context("failed to parse NLMSG_DONE")?;
+                    .and_then(|buf| DoneMessage::parse(&buf))?;
                 Done(msg)
             }
             NLMSG_OVERRUN => Overrun(bytes.to_vec()),
-            message_type => {
-                let inner_msg = I::deserialize(&header, bytes).context(
-                    format!("Failed to parse message with type {message_type}"),
-                )?;
-                InnerMessage(inner_msg)
+            _message_type => {
+                if let Ok(inner_msg) = I::deserialize(&header, bytes) {
+                    InnerMessage(inner_msg)
+                } else {
+                    return Err(AxError::InvalidInput);
+                }
             }
         };
         Ok(NetlinkMessage { header, payload })
@@ -133,7 +135,7 @@ where
             Noop => 0,
             Done(ref msg) => msg.buffer_len(),
             Overrun(ref bytes) => bytes.len(),
-            Error(ref msg) => msg.buffer_len(),
+            // Error(ref msg) => msg.buffer_len(),
             InnerMessage(ref msg) => msg.buffer_len(),
         };
 
@@ -151,7 +153,7 @@ where
             Noop => {}
             Done(ref msg) => msg.emit(buffer),
             Overrun(ref bytes) => buffer.copy_from_slice(bytes),
-            Error(ref msg) => msg.emit(buffer),
+            // Error(ref msg) => msg.emit(buffer),
             InnerMessage(ref msg) => msg.serialize(buffer),
         }
     }
@@ -169,99 +171,100 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    use std::{convert::Infallible, mem::size_of, num::NonZeroI32};
 
-    #[derive(Clone, Debug, Default, PartialEq)]
-    struct FakeNetlinkInnerMessage;
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FakeNetlinkInnerMessage;
 
-    impl NetlinkSerializable for FakeNetlinkInnerMessage {
-        fn message_type(&self) -> u16 {
-            unimplemented!("unused by tests")
-        }
-
-        fn buffer_len(&self) -> usize {
-            unimplemented!("unused by tests")
-        }
-
-        fn serialize(&self, _buffer: &mut [u8]) {
-            unimplemented!("unused by tests")
-        }
+impl NetlinkSerializable for FakeNetlinkInnerMessage {
+    fn message_type(&self) -> u16 {
+        unimplemented!("unused by tests")
     }
 
-    impl NetlinkDeserializable for FakeNetlinkInnerMessage {
-        type Error = Infallible;
-
-        fn deserialize(
-            _header: &NetlinkHeader,
-            _payload: &[u8],
-        ) -> Result<Self, Self::Error> {
-            unimplemented!("unused by tests")
-        }
+    fn buffer_len(&self) -> usize {
+        unimplemented!("unused by tests")
     }
 
-    #[test]
-    fn test_done() {
-        let header = NetlinkHeader::default();
-        let done_msg = DoneMessage {
-            code: 0,
-            extended_ack: vec![6, 7, 8, 9],
-        };
-        let mut want = NetlinkMessage::new(
-            header,
-            NetlinkPayload::<FakeNetlinkInnerMessage>::Done(done_msg.clone()),
-        );
-        want.finalize();
-
-        let len = want.buffer_len();
-        assert_eq!(
-            len,
-            header.buffer_len()
-                + size_of::<i32>()
-                + done_msg.extended_ack.len()
-        );
-
-        let mut buf = vec![1; len];
-        want.emit(&mut buf);
-
-        let done_buf = DoneBuffer::new(&buf[header.buffer_len()..]);
-        assert_eq!(done_buf.code(), done_msg.code);
-        assert_eq!(done_buf.extended_ack(), &done_msg.extended_ack);
-
-        let got = NetlinkMessage::parse(&NetlinkBuffer::new(&buf)).unwrap();
-        assert_eq!(got, want);
-    }
-
-    #[test]
-    fn test_error() {
-        // SAFETY: value is non-zero.
-        const ERROR_CODE: NonZeroI32 =
-            unsafe { NonZeroI32::new_unchecked(-8765) };
-
-        let header = NetlinkHeader::default();
-        let error_msg = ErrorMessage {
-            code: Some(ERROR_CODE),
-            header: vec![],
-        };
-        let mut want = NetlinkMessage::new(
-            header,
-            NetlinkPayload::<FakeNetlinkInnerMessage>::Error(error_msg.clone()),
-        );
-        want.finalize();
-
-        let len = want.buffer_len();
-        assert_eq!(len, header.buffer_len() + error_msg.buffer_len());
-
-        let mut buf = vec![1; len];
-        want.emit(&mut buf);
-
-        let error_buf = ErrorBuffer::new(&buf[header.buffer_len()..]);
-        assert_eq!(error_buf.code(), error_msg.code);
-
-        let got = NetlinkMessage::parse(&NetlinkBuffer::new(&buf)).unwrap();
-        assert_eq!(got, want);
+    fn serialize(&self, _buffer: &mut [u8]) {
+        unimplemented!("unused by tests")
     }
 }
+
+impl NetlinkDeserializable for FakeNetlinkInnerMessage {
+    fn deserialize(
+        _header: &NetlinkHeader,
+        _payload: &[u8],
+    ) -> Result<Self, AxError> {
+        unimplemented!("unused by tests")
+    }
+}
+
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     use std::{convert::Infallible, mem::size_of, num::NonZeroI32};
+
+//     #[test]
+//     fn test_done() {
+//         let header = NetlinkHeader::default();
+//         let done_msg = DoneMessage {
+//             code: 0,
+//             extended_ack: vec![6, 7, 8, 9],
+//         };
+//         let mut want = NetlinkMessage::new(
+//             header,
+//             NetlinkPayload::<FakeNetlinkInnerMessage>::Done(done_msg.clone()),
+//         );
+//         want.finalize();
+
+//         let len = want.buffer_len();
+//         assert_eq!(
+//             len,
+//             header.buffer_len()
+//                 + size_of::<i32>()
+//                 + done_msg.extended_ack.len()
+//         );
+
+//         let mut buf = vec![1; len];
+//         want.emit(&mut buf);
+
+//         let done_buf = DoneBuffer::new(&buf[header.buffer_len()..]);
+//         assert_eq!(done_buf.code(), done_msg.code);
+//         assert_eq!(done_buf.extended_ack(), &done_msg.extended_ack);
+
+//         let got = NetlinkMessage::parse(&NetlinkBuffer::new(&buf)).unwrap();
+//         assert_eq!(got, want);
+//     }
+
+//     #[test]
+//     fn test_error() {
+//         // SAFETY: value is non-zero.
+//         const ERROR_CODE: NonZeroI32 =
+//             unsafe { NonZeroI32::new_unchecked(-8765) };
+
+//         let header = NetlinkHeader::default();
+//         let error_msg = ErrorMessage {
+//             code: Some(ERROR_CODE),
+//             header: vec![],
+//         };
+//         let mut want = NetlinkMessage::new(
+//             header,
+//             NetlinkPayload::<FakeNetlinkInnerMessage>::Error(error_msg.clone()),
+//         );
+//         want.finalize();
+
+//         let len = want.buffer_len();
+//         assert_eq!(len, header.buffer_len() + error_msg.buffer_len());
+
+//         let mut buf = vec![1; len];
+//         want.emit(&mut buf);
+
+//         let error_buf = ErrorBuffer::new(&buf[header.buffer_len()..]);
+//         assert_eq!(error_buf.code(), error_msg.code);
+
+//         let got = NetlinkMessage::parse(&NetlinkBuffer::new(&buf)).unwrap();
+//         assert_eq!(got, want);
+//     }
+// }

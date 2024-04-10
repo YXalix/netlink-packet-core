@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-use std::fmt::Debug;
+use core::fmt::Debug;
 
-use crate::{DoneMessage, ErrorMessage, NetlinkSerializable};
+use alloc::vec::Vec;
+
+use crate::{DoneMessage, NetlinkSerializable};
 
 /// The message is ignored.
 pub const NLMSG_NOOP: u16 = 1;
@@ -19,7 +21,7 @@ pub const NLMSG_ALIGNTO: u16 = 4;
 #[non_exhaustive]
 pub enum NetlinkPayload<I> {
     Done(DoneMessage),
-    Error(ErrorMessage),
+    // Error(ErrorMessage),
     Noop,
     Overrun(Vec<u8>),
     InnerMessage(I),
@@ -32,7 +34,7 @@ where
     pub fn message_type(&self) -> u16 {
         match self {
             NetlinkPayload::Done(_) => NLMSG_DONE,
-            NetlinkPayload::Error(_) => NLMSG_ERROR,
+            // NetlinkPayload::Error(_) => NLMSG_ERROR,
             NetlinkPayload::Noop => NLMSG_NOOP,
             NetlinkPayload::Overrun(_) => NLMSG_OVERRUN,
             NetlinkPayload::InnerMessage(message) => message.message_type(),

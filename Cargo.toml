@@ -12,9 +12,10 @@ repository = "https://github.com/rust-netlink/netlink-packet-core"
 description = "netlink packet types"
 
 [dependencies]
-anyhow = "1.0.31"
-byteorder = "1.3.2"
-netlink-packet-utils = "0.5.2"
+log = "0.4"
+byteorder = { version = "1", default-features = false }
+netlink-packet-utils = { path= "../../crates/netlink-packet-utils" }
+axerrno = { path = "../../crates/axerrno" }
 
 [dev-dependencies]
 netlink-packet-route = "0.13.0"

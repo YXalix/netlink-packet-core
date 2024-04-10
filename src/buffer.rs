@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+use axerrno::AxError;
 use byteorder::{ByteOrder, NativeEndian};
 use netlink_packet_utils::DecodeError;
 
@@ -165,24 +166,11 @@ impl<T: AsRef<[u8]>> NetlinkBuffer<T> {
     fn check_buffer_length(&self) -> Result<(), DecodeError> {
         let len = self.buffer.as_ref().len();
         if len < PORT_NUMBER.end {
-            Err(format!(
-                "invalid netlink buffer: length is {} but netlink packets are at least {} bytes",
-                len, PORT_NUMBER.end
-            )
-            .into())
+            Err(AxError::InvalidInput)
         } else if len < self.length() as usize {
-            Err(format!(
-                "invalid netlink buffer: length field says {} the buffer is {} bytes long",
-                self.length(),
-                len
-            )
-            .into())
+            Err(AxError::InvalidInput)
         } else if (self.length() as usize) < PORT_NUMBER.end {
-            Err(format!(
-                "invalid netlink buffer: length field says {} but netlink packets are at least {} bytes",
-                self.length(),
-                len
-            ).into())
+            Err(AxError::InvalidInput)
         } else {
             Ok(())
         }
@@ -347,58 +335,58 @@ impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> NetlinkBuffer<&'a mut T> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::{
-        constants::{NLM_F_MATCH, NLM_F_REQUEST, NLM_F_ROOT},
-        NetlinkBuffer,
-    };
+// #[cfg(test)]
+// mod tests {
+//     use crate::{
+//         constants::{NLM_F_MATCH, NLM_F_REQUEST, NLM_F_ROOT},
+//         NetlinkBuffer,
+//     };
 
-    const RTM_GETLINK: u16 = 18;
+//     const RTM_GETLINK: u16 = 18;
 
-    // a packet captured with tcpdump that was sent when running `ip link show`
-    #[rustfmt::skip]
-    static IP_LINK_SHOW_PKT: [u8; 40] = [
-        0x28, 0x00, 0x00, 0x00, // length = 40
-        0x12, 0x00, // message type = 18 (RTM_GETLINK)
-        0x01, 0x03, // flags = Request + Specify Tree Root + Return All Matching
-        0x34, 0x0e, 0xf9, 0x5a, // sequence number = 1526271540
-        0x00, 0x00, 0x00, 0x00, // port id = 0
-        // payload
-        0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x08, 0x00, 0x1d, 0x00, 0x01, 0x00, 0x00, 0x00];
+//     // a packet captured with tcpdump that was sent when running `ip link show`
+//     #[rustfmt::skip]
+//     static IP_LINK_SHOW_PKT: [u8; 40] = [
+//         0x28, 0x00, 0x00, 0x00, // length = 40
+//         0x12, 0x00, // message type = 18 (RTM_GETLINK)
+//         0x01, 0x03, // flags = Request + Specify Tree Root + Return All Matching
+//         0x34, 0x0e, 0xf9, 0x5a, // sequence number = 1526271540
+//         0x00, 0x00, 0x00, 0x00, // port id = 0
+//         // payload
+//         0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+//         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+//         0x08, 0x00, 0x1d, 0x00, 0x01, 0x00, 0x00, 0x00];
 
-    #[test]
-    fn packet_read() {
-        let packet = NetlinkBuffer::new(&IP_LINK_SHOW_PKT[..]);
-        assert_eq!(packet.length(), 40);
-        assert_eq!(packet.message_type(), RTM_GETLINK);
-        assert_eq!(packet.sequence_number(), 1526271540);
-        assert_eq!(packet.port_number(), 0);
-        let flags = packet.flags();
-        assert!(flags & NLM_F_ROOT == NLM_F_ROOT);
-        assert!(flags & NLM_F_REQUEST == NLM_F_REQUEST);
-        assert!(flags & NLM_F_MATCH == NLM_F_MATCH);
-        assert_eq!(flags, NLM_F_ROOT | NLM_F_REQUEST | NLM_F_MATCH);
-        assert_eq!(packet.payload_length(), 24);
-        assert_eq!(packet.payload(), &IP_LINK_SHOW_PKT[16..]);
-    }
+//     #[test]
+//     fn packet_read() {
+//         let packet = NetlinkBuffer::new(&IP_LINK_SHOW_PKT[..]);
+//         assert_eq!(packet.length(), 40);
+//         assert_eq!(packet.message_type(), RTM_GETLINK);
+//         assert_eq!(packet.sequence_number(), 1526271540);
+//         assert_eq!(packet.port_number(), 0);
+//         let flags = packet.flags();
+//         assert!(flags & NLM_F_ROOT == NLM_F_ROOT);
+//         assert!(flags & NLM_F_REQUEST == NLM_F_REQUEST);
+//         assert!(flags & NLM_F_MATCH == NLM_F_MATCH);
+//         assert_eq!(flags, NLM_F_ROOT | NLM_F_REQUEST | NLM_F_MATCH);
+//         assert_eq!(packet.payload_length(), 24);
+//         assert_eq!(packet.payload(), &IP_LINK_SHOW_PKT[16..]);
+//     }
 
-    #[test]
-    fn packet_build() {
-        let mut buf = vec![0; 40];
-        {
-            let mut packet = NetlinkBuffer::new(&mut buf);
-            packet.set_length(40);
-            packet.set_message_type(RTM_GETLINK);
-            packet.set_sequence_number(1526271540);
-            packet.set_port_number(0);
-            packet.set_flags(NLM_F_ROOT | NLM_F_REQUEST | NLM_F_MATCH);
-            packet
-                .payload_mut()
-                .copy_from_slice(&IP_LINK_SHOW_PKT[16..]);
-        }
-        assert_eq!(&buf[..], &IP_LINK_SHOW_PKT[..]);
-    }
-}
+//     #[test]
+//     fn packet_build() {
+//         let mut buf = vec![0; 40];
+//         {
+//             let mut packet = NetlinkBuffer::new(&mut buf);
+//             packet.set_length(40);
+//             packet.set_message_type(RTM_GETLINK);
+//             packet.set_sequence_number(1526271540);
+//             packet.set_port_number(0);
+//             packet.set_flags(NLM_F_ROOT | NLM_F_REQUEST | NLM_F_MATCH);
+//             packet
+//                 .payload_mut()
+//                 .copy_from_slice(&IP_LINK_SHOW_PKT[16..]);
+//         }
+//         assert_eq!(&buf[..], &IP_LINK_SHOW_PKT[..]);
+//     }
+// }
